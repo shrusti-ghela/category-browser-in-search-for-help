@@ -1,0 +1,8 @@
+streamlit
+pandas
+pyarrow
+geopy
+timezonefinder
+markdown
+pycountry
+pytz
