@@ -42,7 +42,7 @@ st.set_page_config(
 # )
 
 DEFAULT_RESULTS_JSONL = Path("data/first_user_full_labels.jsonl")
-DEFAULT_FULL_CONVERSATIONS_FILE = Path("data/in_scope_full_conversations_sorted.jsonl")
+DEFAULT_FULL_CONVERSATIONS_FILE = Path("data/in_scope_full_conversations_sorted.jsonl.gz")
 MERGE_KEY = "conversation_hash"
 
 FULL_CONVERSATION_CANDIDATE_COLUMNS = [
@@ -844,6 +844,12 @@ def load_table(path_str: str):
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
+    if str(path).endswith(".jsonl.gz"):
+        return pd.read_json(
+        path,
+        lines=True,
+        compression="gzip",
+    )
     if path.suffix == ".jsonl":
         return pd.read_json(path, lines=True)
     if path.suffix == ".parquet":
