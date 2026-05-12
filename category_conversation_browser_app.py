@@ -678,6 +678,36 @@ code {
     white-space: pre-wrap !important;
 }
 
+
+/* Keep selected dropdown text visible on deployed Streamlit themes */
+div[data-baseweb="select"] *,
+div[data-testid="stSelectbox"] *,
+div[data-baseweb="popover"] * {
+    color: #0f172a !important;
+}
+
+div[data-baseweb="select"] svg {
+    fill: #0f172a !important;
+}
+
+/* Custom prompt block instead of st.code, which can turn black in theme overrides */
+.prompt-box {
+    color: #334155 !important;
+    background: rgba(248,250,252,0.92) !important;
+    border: 1px solid rgba(15,23,42,0.08);
+    border-radius: 16px;
+    padding: 14px 16px;
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    overflow-x: auto;
+}
+
+.prompt-box * {
+    color: #334155 !important;
+}
+
 @media (max-width: 900px) {
     .hero-title {
         font-size: 2.2rem;
@@ -774,28 +804,13 @@ def get_country_timezone_fallback(country):
 
 
 def get_timezone_from_country_state(country, state):
-    coords = geocode_location(country, state)
+    """Fast timezone estimate for metadata display.
 
-    if coords is not None:
-        lat, lon = coords
-
-        try:
-            tf = get_timezone_finder()
-
-            tz = tf.certain_timezone_at(lat=lat, lng=lon)
-
-            if tz is None:
-                tz = tf.timezone_at(lat=lat, lng=lon)
-
-            if tz is None:
-                tz = tf.closest_timezone_at(lat=lat, lng=lon)
-
-            if tz:
-                return tz
-
-        except Exception:
-            pass
-
+    The earlier version called Nominatim/geopy during page render. On Streamlit
+    Cloud that makes every rerun feel slow and can also fail because of network
+    throttling. For this browser, country-level fallback is good enough and is
+    fully local.
+    """
     return get_country_timezone_fallback(country)
 
 def format_utc_time(timestamp):
@@ -958,14 +973,50 @@ def prepare_data(results_path, full_conversations_path):
             if c in conv_df.columns and c not in keep_cols:
                 keep_cols.append(c)
 
-        return results_df.merge(
+        df = results_df.merge(
             conv_df[keep_cols],
             on=MERGE_KEY,
             how="left",
             suffixes=("", "_source"),
         )
+    else:
+        df = results_df
 
-    return results_df
+    # Do the expensive parsing/filtering once inside the cached load path.
+    # Previously this ran on every button click / dropdown change.
+    df["display_categories"] = df["categories"].apply(filter_categories_for_display)
+    df = df[df["display_categories"].apply(len) > 0].copy()
+
+    df["turn_count"] = df.apply(
+        lambda row: get_turn_count_from_messages(infer_messages_from_row(row)),
+        axis=1,
+    )
+
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def get_category_options(df):
+    return [
+        c
+        for c in CATEGORY_ORDER
+        if df["display_categories"].apply(lambda cats: c in cats).any()
+    ]
+
+
+@st.cache_data(show_spinner=False)
+def get_filtered_subset(df, category, selected_turn_range):
+    category_df = df[
+        df["display_categories"].apply(lambda cats: category in cats)
+    ].copy()
+
+    subset = category_df[
+        category_df["turn_count"].notna()
+        & (category_df["turn_count"] >= selected_turn_range[0])
+        & (category_df["turn_count"] <= selected_turn_range[1])
+    ].copy()
+
+    return category_df, subset
 
 
 def filter_categories_for_display(cats):
@@ -1094,11 +1145,13 @@ def render_definition_prompt(category):
     )
 
     with st.expander("View category prompt"):
-        #st.markdown("**Definition**")
-        #st.write(cfg["definition"])
-
-        #st.markdown("**Prompt used**")
-        st.code(build_category_prompt(category), language="text")
+        prompt = html.escape(build_category_prompt(category))
+        st.markdown(
+            f"""
+            <pre class="prompt-box">{prompt}</pre>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def render_metadata_sidebar(row):
@@ -1213,21 +1266,9 @@ df = prepare_data(
     str(DEFAULT_FULL_CONVERSATIONS_FILE),
 )
 
-df["display_categories"] = df["categories"].apply(filter_categories_for_display)
-df = df[df["display_categories"].apply(len) > 0].copy()
-
-df["turn_count"] = df.apply(
-    lambda row: get_turn_count_from_messages(infer_messages_from_row(row)),
-    axis=1,
-)
-
 render_hero(len(df))
 
-category_options = [
-    c
-    for c in CATEGORY_ORDER
-    if df["display_categories"].apply(lambda cats: c in cats).any()
-]
+category_options = get_category_options(df)
 
 if not category_options:
     st.info("No in-scope conversations found after removing OUT_OF_SCOPE.")
@@ -1269,8 +1310,6 @@ with col_turns:
             value=(min_available_turns, max_available_turns),
             step=1,
         )
-
-st.markdown("</div>", unsafe_allow_html=True)
 
 subset = category_df[
     category_df["turn_count"].notna()
@@ -1336,7 +1375,6 @@ with main_col:
     else:
         st.write("No conversation text available.")
 
-    st.markdown("</div>", unsafe_allow_html=True)
 
 with metadata_col:
     render_metadata_sidebar(row)
